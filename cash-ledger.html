@@ -136,11 +136,20 @@
   input[type=date].inp{appearance:none;-webkit-appearance:none}
 
   .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chips.seg2{flex-wrap:nowrap}
+  .chips.seg2 .chip{flex:1;justify-content:center}
   .chip{display:inline-flex;align-items:center;gap:7px;padding:9px 14px;border-radius:11px;background:var(--surface);border:1.5px solid var(--line-strong);font-size:13.5px;font-weight:600;color:var(--ink-soft);transition:all .14s}
   .chip .cdot{width:9px;height:9px;border-radius:3px;flex:none}
   .chip.on{border-color:transparent;color:#fff;font-weight:700}
   .chip.add{border-style:dashed;color:var(--muted)}
   .chip.add svg{width:14px;height:14px;stroke:currentColor;stroke-width:2.4;fill:none;stroke-linecap:round}
+
+  /* type / method / status tags in list */
+  .e-tag{display:inline-flex;align-items:center;padding:2px 7px;border-radius:6px;font-size:11px;font-weight:700}
+  .e-tag.income{background:var(--accent-soft);color:var(--accent)}
+  .e-tag.pending{background:#FBEBD6;color:#9A5B12}
+  .e-tag.method{background:var(--line);color:var(--ink-soft);font-weight:600}
+  .e-amt.income{color:var(--accent)}
 
   .subhint{font-size:12px;color:var(--muted);margin-top:9px;font-weight:500}
 
@@ -263,6 +272,11 @@
   </div>
   <div class="sheet-body">
     <div class="field">
+      <label>구분</label>
+      <div class="chips seg2" id="typeChips"></div>
+    </div>
+
+    <div class="field">
       <label>금액</label>
       <div class="amount-wrap">
         <span class="pre">₩</span>
@@ -273,6 +287,16 @@
     <div class="field">
       <label>날짜</label>
       <input type="date" id="date" class="inp">
+    </div>
+
+    <div class="field">
+      <label>결제수단</label>
+      <div class="chips seg2" id="methodChips"></div>
+    </div>
+
+    <div class="field">
+      <label>결제상태</label>
+      <div class="chips seg2" id="statusChips"></div>
     </div>
 
     <div class="field">
@@ -294,7 +318,7 @@
     <div class="field">
       <label>영수증 사진 <span style="color:var(--muted);font-weight:500">(선택)</span></label>
       <div class="photo-grid" id="photoGrid"></div>
-      <input type="file" id="photoInput" class="hidden-input" accept="image/*" capture="environment" multiple>
+      <input type="file" id="photoInput" class="hidden-input" accept="image/*" multiple>
     </div>
   </div>
   <div class="sheet-foot">
@@ -378,6 +402,9 @@ let viewMonth = new Date();
 let editingId = null;          // 수정 중인 entry id
 let selCat = null;             // 선택된 카테고리 id
 let selSub = null;             // 선택된 세부항목 id
+let selType = 'expense';       // 'expense' | 'income'
+let selMethod = 'cash';        // 'cash' | 'other'
+let selStatus = 'done';        // 'done' | 'pending'
 let pendingPhotos = [];        // base64[]
 let photosDirty = false;
 let editingCatId = null;       // 카테고리 편집 중 id
@@ -462,9 +489,13 @@ function catById(id){ return categories.find(c=>c.id===id); }
 
 function renderSummary(){
   const list = monthEntries();
-  const total = list.reduce((s,e)=>s+e.amount,0);
+  const expenseList = list.filter(e=>(e.type||'expense')!=='income');
+  const incomeList = list.filter(e=>e.type==='income');
+  const total = expenseList.reduce((s,e)=>s+e.amount,0);
+  const incomeTotal = incomeList.reduce((s,e)=>s+e.amount,0);
+  const pendingCount = list.filter(e=>e.status==='pending').length;
   const byCat = {};
-  list.forEach(e=>{ byCat[e.categoryId]=(byCat[e.categoryId]||0)+e.amount; });
+  expenseList.forEach(e=>{ byCat[e.categoryId]=(byCat[e.categoryId]||0)+e.amount; });
   const rows = Object.entries(byCat)
     .map(([cid,amt])=>{ const c=catById(cid); return { name:c?c.name:'(삭제됨)', color:c?c.color:'#9B948A', amt }; })
     .sort((a,b)=>b.amt-a.amt);
@@ -472,7 +503,10 @@ function renderSummary(){
 
   let html = `<div class="summary">
     <div class="cap">이번 달 지출</div>
-    <div class="total num"><span class="won">₩</span>${fmt(total)}<span class="count">${list.length}건</span></div>`;
+    <div class="total num"><span class="won">₩</span>${fmt(total)}<span class="count">${expenseList.length}건${pendingCount?` · 결제예정 ${pendingCount}건`:''}</span></div>`;
+  if(incomeList.length){
+    html += `<div style="font-size:12.5px;font-weight:700;color:var(--accent);margin:-8px 0 14px">입금 ₩${fmt(incomeTotal)} · ${incomeList.length}건</div>`;
+  }
   if(rows.length){
     html += `<div class="breakdown">` + rows.map(r=>`
       <div class="bd-row">
@@ -517,17 +551,21 @@ function renderList(){
       const c=catById(e.categoryId);
       const color=c?c.color:'#9B948A';
       const letter=(e.categoryName||'?').slice(0,1);
+      const isIncome=e.type==='income';
+      const isPending=e.status==='pending';
       const sub=e.subitemName?`<span class="e-sub">${esc(e.subitemName)}</span>`:'';
       const memo=e.memo?`<span>${esc(e.memo)}</span>`:'';
       const clip=e.hasPhoto?`<span class="e-clip"><svg viewBox="0 0 24 24"><path d="M21 12.5l-8 8a5 5 0 01-7-7l8-8a3.3 3.3 0 014.7 4.7l-8 8a1.6 1.6 0 01-2.3-2.3l7-7"/></svg>영수증</span>`:'';
-      const meta=[sub,memo,clip].filter(Boolean).join('<span style="color:var(--line-strong)">·</span>');
+      const methodTag=e.method==='other'?`<span class="e-tag method">기타</span>`:'';
+      const statusTag=isPending?`<span class="e-tag pending" data-toggle-status="${e.id}">결제예정</span>`:'';
+      const meta=[sub,methodTag,statusTag,memo,clip].filter(Boolean).join('<span style="color:var(--line-strong)">·</span>');
       html+=`<div class="entry" data-id="${e.id}">
         <div class="e-dot" style="background:${color}">${esc(letter)}</div>
         <div class="e-mid">
-          <div class="e-cat">${esc(e.categoryName||'')}</div>
+          <div class="e-cat">${esc(e.categoryName||'')}${isIncome?`<span class="e-tag income" style="margin-left:6px">입금</span>`:''}</div>
           <div class="e-meta">${meta||'<span style="color:var(--muted)">메모 없음</span>'}</div>
         </div>
-        <div class="e-amt num">${fmt(e.amount)}</div>
+        <div class="e-amt num ${isIncome?'income':''}">${isIncome?'+':''}${fmt(e.amount)}</div>
       </div>`;
     });
     html+=`</div>`;
@@ -536,6 +574,17 @@ function renderList(){
   wrap.querySelectorAll('.entry').forEach(node=>{
     node.addEventListener('click',()=>openEntry(node.dataset.id));
   });
+  wrap.querySelectorAll('[data-toggle-status]').forEach(tag=>{
+    tag.addEventListener('click',(ev)=>{ ev.stopPropagation(); toggleStatus(tag.dataset.toggleStatus); });
+  });
+}
+
+async function toggleStatus(id){
+  const e=entries.find(x=>x.id===id); if(!e) return;
+  e.status = e.status==='pending' ? 'done' : 'pending';
+  await saveEntries();
+  renderAll();
+  toast(e.status==='pending'?'결제예정으로 바꿨어요':'결제완료로 바꿨어요');
 }
 
 function esc(s){ return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
@@ -548,10 +597,12 @@ function closeSheet(scrim,sheet){ el(scrim).classList.remove('show'); el(sheet).
 
 function newEntry(){
   editingId=null; selCat=null; selSub=null; pendingPhotos=[]; photosDirty=false;
+  selType='expense'; selMethod='cash'; selStatus='done';
   el('entryTitle').textContent='지출 추가';
   el('amount').value=''; el('memo').value='';
   el('date').value=ymd(new Date());
   el('deleteEntry').style.display='none';
+  renderTypeChips(); renderMethodChips(); renderStatusChips();
   renderCatChips(); renderSubChips(); renderPhotos(); validate();
   openSheet('scrimEntry','sheetEntry');
   setTimeout(()=>el('amount').focus(),300);
@@ -560,18 +611,46 @@ function newEntry(){
 async function openEntry(id){
   const e=entries.find(x=>x.id===id); if(!e) return;
   editingId=id; selCat=e.categoryId; selSub=e.subitemId||null;
+  selType=e.type||'expense'; selMethod=e.method||'cash'; selStatus=e.status||'done';
   el('entryTitle').textContent='지출 수정';
   el('amount').value=fmt(e.amount);
   el('memo').value=e.memo||'';
   el('date').value=e.date;
   el('deleteEntry').style.display='block';
   pendingPhotos=[]; photosDirty=false;
+  renderTypeChips(); renderMethodChips(); renderStatusChips();
   renderCatChips(); renderSubChips(); renderPhotos(); validate();
   openSheet('scrimEntry','sheetEntry');
   if(e.hasPhoto){
     const p=await sGet('ledger:photo:'+id);
     if(p){ try{ pendingPhotos=JSON.parse(p); renderPhotos(); }catch(_){}}
   }
+}
+
+const TYPE_OPTS = [ {id:'expense', name:'지출', color:'#C0492F'}, {id:'income', name:'입금', color:'#16695B'} ];
+const METHOD_OPTS = [ {id:'cash', name:'현금'}, {id:'other', name:'기타(계좌·카드)'} ];
+const STATUS_OPTS = [ {id:'done', name:'결제완료'}, {id:'pending', name:'결제예정'} ];
+
+function renderTypeChips(){
+  el('typeChips').innerHTML = TYPE_OPTS.map(o=>`
+    <button class="chip ${selType===o.id?'on':''}" data-id="${o.id}" style="${selType===o.id?`background:${o.color}`:''}">${o.name}</button>`).join('');
+  el('typeChips').querySelectorAll('.chip').forEach(b=>{
+    b.onclick=()=>{ selType=b.dataset.id; renderTypeChips(); };
+  });
+}
+function renderMethodChips(){
+  el('methodChips').innerHTML = METHOD_OPTS.map(o=>`
+    <button class="chip ${selMethod===o.id?'on':''}" data-id="${o.id}" style="${selMethod===o.id?`background:var(--ink)`:''}">${o.name}</button>`).join('');
+  el('methodChips').querySelectorAll('.chip').forEach(b=>{
+    b.onclick=()=>{ selMethod=b.dataset.id; renderMethodChips(); };
+  });
+}
+function renderStatusChips(){
+  el('statusChips').innerHTML = STATUS_OPTS.map(o=>`
+    <button class="chip ${selStatus===o.id?'on':''}" data-id="${o.id}" style="${selStatus===o.id?`background:${o.id==='pending'?'#C77D3A':'var(--accent)'}`:''}">${o.name}</button>`).join('');
+  el('statusChips').querySelectorAll('.chip').forEach(b=>{
+    b.onclick=()=>{ selStatus=b.dataset.id; renderStatusChips(); };
+  });
 }
 
 function renderCatChips(){
@@ -622,7 +701,7 @@ function renderPhotos(){
     </div>`).join('');
   html += `<button class="photo-add" id="photoAddBtn">
     <svg viewBox="0 0 24 24"><path d="M14.5 4h-5L8 6H4a1 1 0 00-1 1v11a1 1 0 001 1h16a1 1 0 001-1V7a1 1 0 00-1-1h-4l-1.5-2z"/><circle cx="12" cy="13" r="3.2"/></svg>
-    <span>촬영·선택</span></button>`;
+    <span>사진 추가</span></button>`;
   el('photoGrid').innerHTML=html;
   el('photoAddBtn').onclick=()=>el('photoInput').click();
   el('photoGrid').querySelectorAll('[data-rm]').forEach(b=>{
@@ -677,6 +756,7 @@ async function saveEntryNow(){
   const id=editingId||uid();
   const rec={
     id, date:el('date').value||ymd(new Date()), amount,
+    type:selType, method:selMethod, status:selStatus,
     categoryId:selCat, categoryName:c?c.name:'',
     subitemId:sub?sub.id:null, subitemName:sub?sub.name:'',
     memo:el('memo').value.trim(),
@@ -836,12 +916,16 @@ function download(filename,text,type){
 
 function exportCsv(){
   const rows=entries.slice().sort((a,b)=> a.date<b.date?1:a.date>b.date?-1:0);
-  const head=['날짜','카테고리','세부항목','금액','메모','영수증'];
+  const head=['날짜','구분','결제수단','결제상태','카테고리','세부항목','금액','메모','영수증'];
   const body=rows.map(e=>[
-    e.date, e.categoryName||'', e.subitemName||'', e.amount, (e.memo||'').replace(/\n/g,' '), e.hasPhoto?'있음':''
+    e.date,
+    e.type==='income'?'입금':'지출',
+    e.method==='other'?'기타':'현금',
+    e.status==='pending'?'결제예정':'결제완료',
+    e.categoryName||'', e.subitemName||'', e.amount, (e.memo||'').replace(/\n/g,' '), e.hasPhoto?'있음':''
   ].map(csvCell).join(','));
-  const total=rows.reduce((s,e)=>s+e.amount,0);
-  body.push(['','','합계',total,'',''].map(csvCell).join(','));
+  const total=rows.filter(e=>(e.type||'expense')!=='income').reduce((s,e)=>s+e.amount,0);
+  body.push(['','','','','','합계',total,'',''].map(csvCell).join(','));
   const csv='\uFEFF'+[head.map(csvCell).join(','),...body].join('\r\n');
   download(`지출장부_${monthKey(new Date())}.csv`, csv, 'text/csv;charset=utf-8');
   closeMenu(); toast('CSV로 내보냈어요');
