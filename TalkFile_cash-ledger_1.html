@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>지출장부</title>
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+<script>
+// gstatic이 막히거나 느려서 안 불러와졌으면 jsdelivr에서 동기적으로 재시도
+if (typeof firebase === 'undefined' || !firebase.database) {
+  document.write('<scr'+'ipt src="https://cdn.jsdelivr.net/npm/firebase@9.22.2/firebase-app-compat.js"><\/scr'+'ipt>');
+  document.write('<scr'+'ipt src="https://cdn.jsdelivr.net/npm/firebase@9.22.2/firebase-database-compat.js"><\/scr'+'ipt>');
+}
+</script>
 <style>
   @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
 
@@ -80,9 +89,11 @@
   .day-head .dow{font-size:11.5px;color:var(--muted);font-weight:600;margin-left:6px}
   .day-head .dsum{font-size:12.5px;font-weight:700;color:var(--ink-soft)}
 
-  .entry{display:flex;align-items:center;gap:13px;padding:13px 4px;border-bottom:1px solid var(--line);transition:background .12s;cursor:pointer}
+  .entry{display:flex;align-items:center;gap:13px;padding:13px 4px 13px 11px;border-bottom:1px solid var(--line);border-left:3px solid transparent;transition:background .12s;cursor:pointer}
   .entry:active{background:var(--line)}
   .entry:last-child{border-bottom:none}
+  .entry.pending{background:#FBF3E7;border-left-color:#C77D3A}
+  .entry.pending:active{background:#F5E7D2}
   .e-dot{width:40px;height:40px;border-radius:12px;flex:none;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:#fff}
   .e-mid{flex:1;min-width:0}
   .e-cat{font-size:14.5px;font-weight:700;letter-spacing:-.01em}
@@ -145,11 +156,14 @@
   .chip.add svg{width:14px;height:14px;stroke:currentColor;stroke-width:2.4;fill:none;stroke-linecap:round}
 
   /* type / method / status tags in list */
-  .e-tag{display:inline-flex;align-items:center;padding:2px 7px;border-radius:6px;font-size:11px;font-weight:700}
+  .e-tag{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:6px;font-size:11px;font-weight:700}
+  .e-tag svg{width:11px;height:11px;stroke:currentColor;stroke-width:2.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
   .e-tag.income{background:var(--accent-soft);color:var(--accent)}
-  .e-tag.pending{background:#FBEBD6;color:#9A5B12}
+  .e-tag.pending{background:#C77D3A;color:#fff}
+  .e-tag.done{background:var(--accent-soft);color:var(--accent);opacity:.75}
   .e-tag.method{background:var(--line);color:var(--ink-soft);font-weight:600}
   .e-amt.income{color:var(--accent)}
+  .e-amt.pending{color:#C77D3A}
 
   .subhint{font-size:12px;color:var(--muted);margin-top:9px;font-weight:500}
 
@@ -410,6 +424,43 @@ let photosDirty = false;
 let editingCatId = null;       // 카테고리 편집 중 id
 let catEditColor = PALETTE[0];
 
+/* ---------- Firebase (리오더앱과 같은 프로젝트, 별도 경로 ledger/ 사용) ---------- */
+const firebaseConfig = {
+  apiKey: "AIzaSyDTfiNbbleGz69wr8dYqlOp1vyl3-l3sxY",
+  authDomain: "jejeunosity-reorder.firebaseapp.com",
+  databaseURL: "https://jejeunosity-reorder-default-rtdb.firebaseio.com",
+  projectId: "jejeunosity-reorder",
+  storageBucket: "jejeunosity-reorder.firebasestorage.app",
+  messagingSenderId: "1005352974921",
+  appId: "1:1005352974921:web:5d803723c5713e08bb5d98"
+};
+let fbDb=null, catRef=null, entRef=null, phRef=null;
+let cloudConnected = true; // 실제 클라우드 연결 여부 — 거짓 "동기화됨" 표시 방지용
+try{
+  if(typeof firebase==='undefined' || !firebase.database) throw new Error('Firebase 스크립트 로드 실패');
+  firebase.initializeApp(firebaseConfig);
+  fbDb = firebase.database();
+  catRef = fbDb.ref('ledger/categories');
+  entRef = fbDb.ref('ledger/entries');
+  phRef  = fbDb.ref('ledger/photos');
+}catch(e){
+  console.warn('Firebase 초기화 실패, 이 기기는 로컬 전용으로 동작합니다:', e.message);
+  cloudConnected = false;
+}
+function showOfflineBanner(msg){
+  let b = document.getElementById('offlineBanner');
+  if(!b){
+    b = document.createElement('div'); b.id='offlineBanner';
+    b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:200;background:#C0492F;color:#fff;text-align:center;font-size:12px;font-weight:700;padding:7px 10px;';
+    document.body.appendChild(b);
+  }
+  b.textContent = msg;
+}
+function hideOfflineBanner(){ const b=document.getElementById('offlineBanner'); if(b) b.remove(); }
+function objToArr(obj){ return obj ? Object.keys(obj).map(k=>obj[k]) : []; }
+function syncCat(c){ if(cloudConnected && c && catRef) catRef.child(c.id).set(c).catch(err=>{ console.warn('카테고리 동기화 실패', err); toast('⚠️ 동기화 실패 — 이 기기에만 저장됐어요'); }); }
+function syncEntry(e){ if(cloudConnected && e && entRef) entRef.child(e.id).set(e).catch(err=>{ console.warn('지출기록 동기화 실패', err); toast('⚠️ 동기화 실패 — 이 기기에만 저장됐어요'); }); }
+
 /* ---------- storage : IndexedDB (key-value) ---------- */
 const DB_NAME='jejeunosity-ledger', DB_STORE='kv';
 let _db=null;
@@ -467,6 +518,32 @@ async function init(){
   if(e){ try{ entries = JSON.parse(e); }catch(_){ entries=[]; } }
   renderAll();
   bind();
+  if(cloudConnected) attachCloudSync();
+  else showOfflineBanner('⚠️ 클라우드 연결 실패 — 이 기기는 다른 기기와 동기화되지 않아요');
+}
+
+function attachCloudSync(){
+  catRef.on('value', snap=>{
+    const val = snap.val();
+    let arr = objToArr(val);
+    if(!arr.length){
+      // 클라우드에 아직 아무것도 없으면(최초 연결) 로컬 기본 카테고리를 올려서 시작
+      arr = categories && categories.length ? categories : DEFAULT_CATEGORIES;
+      arr.forEach(c=> catRef.child(c.id).set(c));
+    }
+    categories = arr;
+    saveCategories();
+    renderCatManager(); renderCatChips(); renderSubChips(); renderAll();
+    hideOfflineBanner();
+  }, err=>{ console.warn('카테고리 동기화 오류', err); showOfflineBanner('⚠️ 동기화 연결이 끊겼어요 — 오프라인으로 계속 사용 가능해요'); });
+
+  entRef.on('value', snap=>{
+    const val = snap.val();
+    entries = objToArr(val);
+    saveEntries();
+    renderAll();
+    hideOfflineBanner();
+  }, err=>{ console.warn('지출기록 동기화 오류', err); showOfflineBanner('⚠️ 동기화 연결이 끊겼어요 — 오프라인으로 계속 사용 가능해요'); });
 }
 
 async function saveCategories(){ await sSet('ledger:categories', JSON.stringify(categories)); }
@@ -493,7 +570,8 @@ function renderSummary(){
   const incomeList = list.filter(e=>e.type==='income');
   const total = expenseList.reduce((s,e)=>s+e.amount,0);
   const incomeTotal = incomeList.reduce((s,e)=>s+e.amount,0);
-  const pendingCount = list.filter(e=>e.status==='pending').length;
+  const pendingList = list.filter(e=>e.status==='pending');
+  const pendingTotal = pendingList.reduce((s,e)=>s+e.amount,0);
   const byCat = {};
   expenseList.forEach(e=>{ byCat[e.categoryId]=(byCat[e.categoryId]||0)+e.amount; });
   const rows = Object.entries(byCat)
@@ -503,9 +581,12 @@ function renderSummary(){
 
   let html = `<div class="summary">
     <div class="cap">이번 달 지출</div>
-    <div class="total num"><span class="won">₩</span>${fmt(total)}<span class="count">${expenseList.length}건${pendingCount?` · 결제예정 ${pendingCount}건`:''}</span></div>`;
-  if(incomeList.length){
-    html += `<div style="font-size:12.5px;font-weight:700;color:var(--accent);margin:-8px 0 14px">입금 ₩${fmt(incomeTotal)} · ${incomeList.length}건</div>`;
+    <div class="total num"><span class="won">₩</span>${fmt(total)}<span class="count">${expenseList.length}건</span></div>`;
+  if(incomeList.length || pendingList.length){
+    html += `<div style="display:flex;gap:14px;margin:-8px 0 14px;flex-wrap:wrap">`;
+    if(incomeList.length) html += `<div style="font-size:12.5px;font-weight:700;color:var(--accent)">입금 ₩${fmt(incomeTotal)} · ${incomeList.length}건</div>`;
+    if(pendingList.length) html += `<div style="font-size:12.5px;font-weight:700;color:#C77D3A">⏳ 결제예정 ₩${fmt(pendingTotal)} · ${pendingList.length}건</div>`;
+    html += `</div>`;
   }
   if(rows.length){
     html += `<div class="breakdown">` + rows.map(r=>`
@@ -557,15 +638,17 @@ function renderList(){
       const memo=e.memo?`<span>${esc(e.memo)}</span>`:'';
       const clip=e.hasPhoto?`<span class="e-clip"><svg viewBox="0 0 24 24"><path d="M21 12.5l-8 8a5 5 0 01-7-7l8-8a3.3 3.3 0 014.7 4.7l-8 8a1.6 1.6 0 01-2.3-2.3l7-7"/></svg>영수증</span>`:'';
       const methodTag=e.method==='other'?`<span class="e-tag method">기타</span>`:'';
-      const statusTag=isPending?`<span class="e-tag pending" data-toggle-status="${e.id}">결제예정</span>`:'';
+      const statusTag=isPending
+        ? `<span class="e-tag pending" data-toggle-status="${e.id}"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>결제예정</span>`
+        : `<span class="e-tag done" data-toggle-status="${e.id}"><svg viewBox="0 0 24 24"><path d="M4 12l5 5L20 6"/></svg>결제완료</span>`;
       const meta=[sub,methodTag,statusTag,memo,clip].filter(Boolean).join('<span style="color:var(--line-strong)">·</span>');
-      html+=`<div class="entry" data-id="${e.id}">
+      html+=`<div class="entry ${isPending?'pending':'done'}" data-id="${e.id}">
         <div class="e-dot" style="background:${color}">${esc(letter)}</div>
         <div class="e-mid">
           <div class="e-cat">${esc(e.categoryName||'')}${isIncome?`<span class="e-tag income" style="margin-left:6px">입금</span>`:''}</div>
           <div class="e-meta">${meta||'<span style="color:var(--muted)">메모 없음</span>'}</div>
         </div>
-        <div class="e-amt num ${isIncome?'income':''}">${isIncome?'+':''}${fmt(e.amount)}</div>
+        <div class="e-amt num ${isIncome?'income':''} ${isPending?'pending':''}">${isIncome?'+':''}${fmt(e.amount)}</div>
       </div>`;
     });
     html+=`</div>`;
@@ -583,6 +666,7 @@ async function toggleStatus(id){
   const e=entries.find(x=>x.id===id); if(!e) return;
   e.status = e.status==='pending' ? 'done' : 'pending';
   await saveEntries();
+  syncEntry(e);
   renderAll();
   toast(e.status==='pending'?'결제예정으로 바꿨어요':'결제완료로 바꿨어요');
 }
@@ -681,7 +765,7 @@ function renderSubChips(){
     const name=prompt(c.name+' 세부항목 이름 (예: '+placeholderFor(c.name)+')');
     if(!name||!name.trim()) return;
     const s={id:uid(),name:name.trim()};
-    c.subitems.push(s); await saveCategories();
+    c.subitems.push(s); await saveCategories(); syncCat(c);
     selSub=s.id; renderSubChips();
   };
 }
@@ -766,10 +850,16 @@ async function saveEntryNow(){
   if(editingId){ const i=entries.findIndex(x=>x.id===id); entries[i]=rec; }
   else entries.push(rec);
   await saveEntries();
+  syncEntry(rec);
 
   if(photosDirty || !editingId){
-    if(pendingPhotos.length) await sSet('ledger:photo:'+id, JSON.stringify(pendingPhotos));
-    else await sDel('ledger:photo:'+id);
+    if(pendingPhotos.length){
+      await sSet('ledger:photo:'+id, JSON.stringify(pendingPhotos));
+      if(cloudConnected) phRef.child(id).set(pendingPhotos).catch(err=>{ console.warn('사진 동기화 실패', err); toast('⚠️ 사진 동기화 실패 — 이 기기에만 저장됐어요'); });
+    }else{
+      await sDel('ledger:photo:'+id);
+      if(cloudConnected) phRef.child(id).remove().catch(err=>console.warn(err));
+    }
   }
   closeSheet('scrimEntry','sheetEntry');
   renderAll();
@@ -782,6 +872,10 @@ async function deleteEntryNow(){
   await sDel('ledger:photo:'+editingId);
   entries=entries.filter(x=>x.id!==editingId);
   await saveEntries();
+  if(cloudConnected){
+    entRef.child(editingId).remove().catch(err=>console.warn(err));
+    phRef.child(editingId).remove().catch(err=>console.warn(err));
+  }
   closeSheet('scrimEntry','sheetEntry');
   renderAll();
   toast('삭제했어요');
@@ -822,18 +916,18 @@ function renderCatManager(){
       const inp=el('catBody').querySelector(`[data-subinput="${b.dataset.addsub}"]`);
       const name=inp.value.trim(); if(!name) return;
       const c=catById(b.dataset.addsub);
-      c.subitems.push({id:uid(),name}); await saveCategories();
+      c.subitems.push({id:uid(),name}); await saveCategories(); syncCat(c);
       renderCatManager();
     };
   });
   el('catBody').querySelectorAll('[data-subinput]').forEach(inp=>{
-    inp.addEventListener('keydown',e=>{ if(e.key==='Enter'){ const c=catById(inp.dataset.subinput); const n=inp.value.trim(); if(n){ c.subitems.push({id:uid(),name:n}); saveCategories().then(renderCatManager); } } });
+    inp.addEventListener('keydown',e=>{ if(e.key==='Enter'){ const c=catById(inp.dataset.subinput); const n=inp.value.trim(); if(n){ c.subitems.push({id:uid(),name:n}); saveCategories().then(renderCatManager); syncCat(c); } } });
   });
   el('catBody').querySelectorAll('[data-delsub]').forEach(b=>{
     b.onclick=async()=>{
       const [cid,sid]=b.dataset.delsub.split(':');
       const c=catById(cid); c.subitems=c.subitems.filter(s=>s.id!==sid);
-      await saveCategories(); renderCatManager();
+      await saveCategories(); syncCat(c); renderCatManager();
     };
   });
 }
@@ -861,16 +955,24 @@ function openCatEdit(id){
 async function saveCatEdit(){
   const name=el('catName').value.trim();
   if(!name){ toast('이름을 입력해 주세요'); return; }
+  let cat;
   if(editingCatId){
     const c=catById(editingCatId);
     const oldName=c.name;
     c.name=name; c.color=catEditColor;
+    cat=c;
     // 과거 기록의 표시 이름도 함께 갱신
-    if(oldName!==name){ entries.forEach(e=>{ if(e.categoryId===editingCatId) e.categoryName=name; }); await saveEntries(); }
+    if(oldName!==name){
+      entries.forEach(e=>{ if(e.categoryId===editingCatId) e.categoryName=name; });
+      await saveEntries();
+      entries.filter(e=>e.categoryId===editingCatId).forEach(syncEntry);
+    }
   }else{
-    categories.push({id:uid(),name,color:catEditColor,subitems:[]});
+    cat={id:uid(),name,color:catEditColor,subitems:[]};
+    categories.push(cat);
   }
   await saveCategories();
+  syncCat(cat);
   closeSheet('scrimCatEdit','sheetCatEdit');
   renderCatManager(); renderAll();
   toast('저장했어요');
@@ -883,8 +985,10 @@ async function deleteCatNow(){
     ? `이 카테고리로 기록한 지출이 ${used}건 있어요.\n카테고리를 삭제해도 기존 기록은 그대로 남습니다. 삭제할까요?`
     : '이 카테고리를 삭제할까요?';
   if(!confirm(msg)) return;
-  categories=categories.filter(c=>c.id!==editingCatId);
+  const delId=editingCatId;
+  categories=categories.filter(c=>c.id!==delId);
   await saveCategories();
+  if(cloudConnected) catRef.child(delId).remove().catch(err=>console.warn(err));
   closeSheet('scrimCatEdit','sheetCatEdit');
   renderCatManager(); renderAll();
   toast('삭제했어요');
@@ -947,10 +1051,24 @@ el('restoreInput').onchange=async(ev)=>{
     const text=await file.text();
     const data=JSON.parse(text);
     if(!data.entries||!data.categories) throw new Error('형식 오류');
-    if(!confirm('백업을 불러오면 현재 데이터를 덮어씁니다. 계속할까요?')) return;
+    const confirmMsg = cloudConnected
+      ? '백업을 불러오면 현재 데이터를 덮어씁니다 (연결된 다른 기기에도 반영돼요). 계속할까요?'
+      : '백업을 불러오면 현재 데이터를 덮어씁니다. 계속할까요?';
+    if(!confirm(confirmMsg)) return;
     categories=data.categories; entries=data.entries;
     await saveCategories(); await saveEntries();
     if(data.photos){ for(const [id,p] of Object.entries(data.photos)){ await sSet('ledger:photo:'+id, typeof p==='string'?p:JSON.stringify(p)); } }
+    if(cloudConnected){
+      const catObj={}; categories.forEach(c=>catObj[c.id]=c);
+      const entObj={}; entries.forEach(e=>entObj[e.id]=e);
+      await catRef.set(catObj);
+      await entRef.set(entObj);
+      if(data.photos){
+        const photoUpdates={};
+        for(const [id,p] of Object.entries(data.photos)){ photoUpdates[id]= typeof p==='string' ? JSON.parse(p) : p; }
+        await phRef.set(photoUpdates);
+      }
+    }
     renderAll(); toast('복원했어요');
   }catch(e){ alert('불러오기에 실패했어요. 올바른 백업 파일인지 확인해 주세요.'); }
 };
