@@ -458,6 +458,10 @@ function showOfflineBanner(msg){
 }
 function hideOfflineBanner(){ const b=document.getElementById('offlineBanner'); if(b) b.remove(); }
 function objToArr(obj){ return obj ? Object.keys(obj).map(k=>obj[k]) : []; }
+// Firebase는 빈 배열([])을 저장하면 통째로 지워버리는 특성이 있어서,
+// 세부항목이 없는 카테고리가 내려올 때 subitems가 아예 없이 올 수 있음.
+// 화면을 그리기 전에 항상 배열 형태로 보정해서 방지한다.
+function normalizeCategories(arr){ return (arr||[]).map(c=>({...c, subitems: Array.isArray(c.subitems)?c.subitems:[]})); }
 function syncCat(c){ if(cloudConnected && c && catRef) catRef.child(c.id).set(c).catch(err=>{ console.warn('카테고리 동기화 실패', err); toast('⚠️ 동기화 실패 — 이 기기에만 저장됐어요'); }); }
 function syncEntry(e){ if(cloudConnected && e && entRef) entRef.child(e.id).set(e).catch(err=>{ console.warn('지출기록 동기화 실패', err); toast('⚠️ 동기화 실패 — 이 기기에만 저장됐어요'); }); }
 
@@ -509,7 +513,7 @@ function prettyDate(str){
    ============================================================ */
 async function init(){
   const c = await sGet('ledger:categories');
-  if(c){ try{ categories = JSON.parse(c); }catch(e){ categories=[]; } }
+  if(c){ try{ categories = normalizeCategories(JSON.parse(c)); }catch(e){ categories=[]; } }
   if(!categories || !categories.length){
     categories = DEFAULT_CATEGORIES;
     await sSet('ledger:categories', JSON.stringify(categories));
@@ -525,7 +529,7 @@ async function init(){
 function attachCloudSync(){
   catRef.on('value', snap=>{
     const val = snap.val();
-    let arr = objToArr(val);
+    let arr = normalizeCategories(objToArr(val));
     if(!arr.length){
       // 클라우드에 아직 아무것도 없으면(최초 연결) 로컬 기본 카테고리를 올려서 시작
       arr = categories && categories.length ? categories : DEFAULT_CATEGORIES;
@@ -1055,7 +1059,7 @@ el('restoreInput').onchange=async(ev)=>{
       ? '백업을 불러오면 현재 데이터를 덮어씁니다 (연결된 다른 기기에도 반영돼요). 계속할까요?'
       : '백업을 불러오면 현재 데이터를 덮어씁니다. 계속할까요?';
     if(!confirm(confirmMsg)) return;
-    categories=data.categories; entries=data.entries;
+    categories=normalizeCategories(data.categories); entries=data.entries;
     await saveCategories(); await saveEntries();
     if(data.photos){ for(const [id,p] of Object.entries(data.photos)){ await sSet('ledger:photo:'+id, typeof p==='string'?p:JSON.stringify(p)); } }
     if(cloudConnected){
